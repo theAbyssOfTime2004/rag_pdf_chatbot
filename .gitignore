@@ -1,1 +1,58 @@
+# forge plans
 plans/2025-07-26-pdf-rag-chatbot-v1.md
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Project specific
+.env
+uploads/*
+!uploads/.gitkeep
+vector_store/*
+!vector_store/.gitkeep
+*.db
+*.sqlite3
+
+# Logs
+*.log
+logs/
+
+# Test
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Docker
+.docker/
+
+# Alembic
+alembic/versions/__pycache__/
