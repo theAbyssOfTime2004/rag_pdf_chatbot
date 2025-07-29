@@ -3,13 +3,15 @@ from typing import Optional
 import os
 
 class Settings(BaseSettings):
-    # API Settings
-    API_V1_STR: str = "/api/v1"
-    PROJECT_NAME: str = "RAG PDF Chatbot"
+    # Project information
+    PROJECT_NAME: str = "PDF RAG Chatbot"
     VERSION: str = "1.0.0"
-    DEBUG: bool = False
+    DEBUG: bool = True
     
-    # Database
+    # API configuration
+    API_V1_STR: str = "/api/v1"
+    
+    # Database configuration
     DATABASE_URL: str = "sqlite:///./rag_chatbot.db"
     
     # File Upload Settings
