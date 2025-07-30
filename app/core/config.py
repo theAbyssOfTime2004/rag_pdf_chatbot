@@ -27,9 +27,13 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL: str = "text-embedding-ada-002"
     LLM_MODEL: str = "gpt-3.5-turbo"
     
-    # Chunking Settings
+    # PDF Processing Settings
+    OCR_LANGUAGE: str = "en"
+    OCR_CONFIDENCE_THRESHOLD: float = 0.7
+    USE_GPU_OCR: bool = False
     CHUNK_SIZE: int = 1000
     CHUNK_OVERLAP: int = 200
+    MAX_PDF_PAGES: int = 100
     
     # Logging
     LOG_LEVEL: str = "INFO"

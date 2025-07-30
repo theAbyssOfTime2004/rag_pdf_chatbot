@@ -195,3 +195,23 @@ async def get_document_chunks(
             for chunk in chunks
         ]
     }
+
+@router.post("/{document_id}/process")
+async def process_document(
+    document_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
+    """
+    Trigger PDF processing for uploaded document
+    """
+    from app.services.pdf_processing_service import PDFProcessingService
+    
+    pdf_service = PDFProcessingService()
+    background_tasks.add_task(pdf_service.process_document, document_id, db)
+    
+    return {
+        "message": "PDF processing started",
+        "document_id": document_id,
+        "status": "processing"
+    }
