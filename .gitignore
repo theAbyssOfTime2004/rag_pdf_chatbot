@@ -55,4 +55,6 @@ htmlcov/
 .docker/
 
 # Alembic
-alembic/versions/__pycache__/
+alembic/versions/__pycache__/# Test files
+test_task5_prototype.py
+test_files/
