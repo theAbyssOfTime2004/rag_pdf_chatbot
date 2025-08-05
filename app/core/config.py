@@ -22,10 +22,11 @@ class Settings(BaseSettings):
     # Security
     SECRET_KEY: str = "your-secret-key-change-in-production"
     
-    # LLM Settings
-    OPENAI_API_KEY: Optional[str] = None
-    EMBEDDING_MODEL: str = "text-embedding-ada-002"
-    LLM_MODEL: str = "gpt-3.5-turbo"
+    # Embedding Settings - FIXED
+    EMBEDDING_MODEL: str = "nomic-ai/nomic-embed-text-v1"  # Correct Nomic model
+    # Alternative models:
+    # EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"           # Fast, 384D
+    # EMBEDDING_MODEL: str = "all-mpnet-base-v2"          # High quality, 768D
     
     # PDF Processing Settings
     OCR_LANGUAGE: str = "en"
@@ -38,9 +39,23 @@ class Settings(BaseSettings):
     # Logging
     LOG_LEVEL: str = "INFO"
     
+    # Vector Store Settings
+    VECTOR_DIMENSION: int = 768  # Nomic model dimension
+    FAISS_INDEX_TYPE: str = "Flat"
+    MAX_SEARCH_RESULTS: int = 20
+    SIMILARITY_THRESHOLD: float = 0.7
+    
+    # Embedding Cache
+    ENABLE_EMBEDDING_CACHE: bool = True
+    CACHE_SIZE_LIMIT: int = 10000
+    
+    # LLM Settings
+    LLM_MODEL: str = "llama2"
+    
     class Config:
         env_file = ".env"
         case_sensitive = True
+        extra = "allow"
 
 # Global settings instance
 settings = Settings()
