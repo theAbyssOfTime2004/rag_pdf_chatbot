@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.database import engine, Base
 from app.api.v1 import router as api_router
+from app.api.v1 import chat
 
 # Tạo tables nếu chưa có
 Base.metadata.create_all(bind=engine)
@@ -25,6 +26,7 @@ app.add_middleware(
 
 # Include API router
 app.include_router(api_router, prefix=settings.API_V1_STR)
+api_router.include_router(chat.router, prefix="/chat", tags=["Chat"])
 
 @app.get("/")
 async def root():
