@@ -11,7 +11,11 @@ import aiofiles
 
 class FileHandler:
     def __init__(self):
-        self.upload_dir = Path(settings.UPLOAD_FOLDER)
+        base_upload_dir = Path(settings.UPLOAD_FOLDER)
+        self.upload_dir = base_upload_dir / "documents"
+
+        # Create base and subfolder
+        base_upload_dir.mkdir(exist_ok=True)
         self.upload_dir.mkdir(exist_ok=True)
         
         # Allowed file extensions (simpler approach)

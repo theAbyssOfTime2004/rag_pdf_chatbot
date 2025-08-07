@@ -30,11 +30,20 @@ class VectorService:
                 index_path="vector_indexes"
             )
             
+            # ✅ THÊM: Debug file existence
+            from pathlib import Path
+            index_file = Path("vector_indexes/faiss_index.index")
+            metadata_file = Path("vector_indexes/faiss_index_metadata.pkl")
+            
+            self.logger.info(f"🔍 Working directory: {Path.cwd()}")
+            self.logger.info(f"📁 Index file exists: {index_file.exists()}")
+            self.logger.info(f"📁 Metadata file exists: {metadata_file.exists()}")
+            
             # Try to load existing index
-            if self.vector_store.load_index():
+            if self.vector_store.load_index("faiss_index"):
                 self.logger.info(f"📚 Loaded existing vector index with {self.vector_store.index.ntotal} vectors")
             else:
-                self.logger.info("🆕 Created new vector index")
+                self.logger.info("🆕 Failed to load existing index or no index found")
                 
         except Exception as e:
             self.logger.error(f"❌ Failed to initialize vector store: {e}")

@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     
     # File Upload Settings
     MAX_FILE_SIZE: int = 50 * 1024 * 1024  # 50MB in bytes
-    UPLOAD_FOLDER: str = "uploads"
+    UPLOAD_FOLDER: str = "uploads/documents"
     ALLOWED_EXTENSIONS: set = {"pdf"}
     
     # Security

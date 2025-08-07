@@ -159,3 +159,37 @@ class DocumentService:
             "total_size_bytes": total_size,
             "total_size_mb": round(total_size / (1024 * 1024), 2)
         }
+    
+    async def trigger_manual_processing(self, document_id: int) -> Dict[str, Any]:
+        """Manually trigger processing for a pending document"""
+        
+        document = self.db.query(Document).filter(Document.id == document_id).first()
+        if not document:
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        if document.processing_status == 'completed':
+            return {"message": "Document already processed", "status": "completed"}
+        
+        # Reset status và trigger processing
+        document.processing_status = 'processing'
+        self.db.commit()
+        
+        try:
+            from app.services.pdf_processing_service import PDFProcessingService
+            
+            pdf_processor = PDFProcessingService()
+            result = await pdf_processor.process_document(document_id, self.db)
+            
+            if result.get("status") == "success":
+                return {"message": "Processing completed successfully", "status": "completed"}
+            else:
+                return {"message": f"Processing failed: {result.get('error')}", "status": "failed"}
+                
+        except Exception as e:
+            # Update document status to failed
+            document.processing_status = 'failed'
+            document.processing_error = str(e)
+            self.db.commit()
+            
+            logging.error(f"Document processing failed for ID {document_id}: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Processing failed: {e}")

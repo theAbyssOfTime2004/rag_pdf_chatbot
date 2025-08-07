@@ -1,5 +1,20 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+import logging
+
+# ✅ THÊM: Enable debug mode
+app = FastAPI(
+    title="RAG PDF Chatbot API",
+    debug=True,  # ← THÊM DÒNG NÀY
+    version="1.0.0"
+)
+
+# ✅ THÊM: Configure logging để hiển thị errors
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+
 from app.core.config import settings
 from app.database import engine, Base
 from app.api.v1 import router as api_router
@@ -10,8 +25,9 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
+    debug=True,
     version=settings.VERSION,
-    debug=settings.DEBUG,
+    # debug=settings.DEBUG,
     description="PDF RAG Chatbot API"
 )
 

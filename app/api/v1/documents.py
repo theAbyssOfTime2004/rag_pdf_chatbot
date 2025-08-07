@@ -196,22 +196,20 @@ async def get_document_chunks(
         ]
     }
 
-@router.post("/{document_id}/process")
-async def process_document(
+@router.post("/{document_id}/process", summary="Manually trigger document processing")
+async def trigger_document_processing(
     document_id: int,
-    background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db)
+    document_service: DocumentService = Depends(get_document_service)  # ← SỬA: Dùng dependency
 ):
-    """
-    Trigger PDF processing for uploaded document
-    """
-    from app.services.pdf_processing_service import PDFProcessingService
+    """Manually trigger processing for a document"""
     
-    pdf_service = PDFProcessingService()
-    background_tasks.add_task(pdf_service.process_document, document_id, db)
-    
-    return {
-        "message": "PDF processing started",
-        "document_id": document_id,
-        "status": "processing"
-    }
+    try:
+        # Gọi method trong DocumentService để trigger processing
+        result = await document_service.trigger_manual_processing(document_id)
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Document processing failed for ID {document_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Processing failed: {e}")

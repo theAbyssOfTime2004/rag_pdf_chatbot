@@ -20,7 +20,7 @@ class PDFProcessingService:
         self.text_processor = TextProcessor()
         self.logger = logging.getLogger(__name__)
     
-    async def process_document(self, document_id: int, db: Session) -> Dict[str, any]:
+    async def process_document(self, document_id: int, db: Session):
         """
         Complete PDF processing pipeline
         """
@@ -71,6 +71,17 @@ class PDFProcessingService:
             document.processed = True
             document.processing_status = "completed"
             db.commit()
+
+            # 10. Add index chunks to vector store
+            from app.services.vector_service import VectorService
+            vector_service = VectorService()
+            
+            result = await vector_service.index_document_chunks(document_id, db)
+            
+            if result['success']:
+                logging.info(f"✅ Vector indexing completed for document {document_id}")
+            else:
+                raise Exception(f"Vector indexing failed: {result.get('error')}")
             
             return {
                 "status": "success",
@@ -84,8 +95,11 @@ class PDFProcessingService:
             
         except Exception as e:
             # Update document status to failed
-            document.processing_status = "failed"
-            db.commit()
+            document = db.query(Document).filter(Document.id == document_id).first()
+            if document:
+                document.processing_status = 'failed'
+                document.processing_error = str(e)
+                db.commit()
             
             self.logger.error(f"PDF processing failed for document {document_id}: {e}")
             return {

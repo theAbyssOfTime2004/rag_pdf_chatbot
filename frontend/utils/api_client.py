@@ -92,3 +92,13 @@ class APIClient:
         except requests.exceptions.RequestException as e:
             st.error(f"Failed to create chat session: {e}")
             return {"error": str(e)}
+    
+    def trigger_document_processing(self, document_id: int) -> Dict[str, Any]:
+        """Trigger manual processing cho document"""
+        try:
+            response = self.session.post(f"{self.base_url}/documents/{document_id}/process")
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            st.error(f"Failed to trigger processing: {e}")
+            return {"error": str(e)}
