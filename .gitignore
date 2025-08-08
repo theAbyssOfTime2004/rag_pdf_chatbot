@@ -58,3 +58,4 @@ htmlcov/
 alembic/versions/__pycache__/# Test files
 test_task5_prototype.py
 test_files/
+vector_indexes/
