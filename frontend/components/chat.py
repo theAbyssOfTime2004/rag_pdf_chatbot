@@ -67,22 +67,22 @@ def display_chat_history():
             st.info("👋 Start a conversation by asking a question about your documents!")
             return
         
-        # Hiển thị messages
-        for msg in messages:
+        # Hiển thị messages với unique message index
+        for msg_idx, msg in enumerate(messages):
             if msg['message_type'] == 'user':
-                render_user_message(msg)
+                render_user_message(msg, msg_idx)
             elif msg['message_type'] == 'ai':
-                render_ai_message(msg)
+                render_ai_message(msg, msg_idx)
 
-def render_user_message(message: Dict[str, Any]):
+def render_user_message(message: Dict[str, Any], msg_idx: int):
     """Render tin nhắn của user"""
     
     with st.chat_message("user", avatar="👤"):
         st.write(message['content'])
         st.caption(f"🕐 {message.get('created_at', 'Unknown time')}")
 
-def render_ai_message(message: Dict[str, Any]):
-    """Render tin nhắn của AI"""
+def render_ai_message(message: Dict[str, Any], msg_idx: int):
+    """Render tin nhắn của AI với unique keys"""
     
     with st.chat_message("assistant", avatar="🤖"):
         st.write(message['content'])
@@ -92,18 +92,19 @@ def render_ai_message(message: Dict[str, Any]):
         if metadata.get('model_used'):
             st.caption(f"🧠 Model: {metadata['model_used']}")
         
-        # Hiển thị sources nếu có
+        # Hiển thị sources nếu có - ✅ FIX: Add unique message index
         if metadata.get('sources'):
-            render_sources(metadata['sources'])
+            render_sources(metadata['sources'], msg_idx)
         
-        # Feedback buttons
-        render_feedback_buttons(message['id'])
+        # Feedback buttons - ✅ FIX: Add unique message index
+        render_feedback_buttons(message['id'], msg_idx)
         
         st.caption(f"🕐 {message.get('created_at', 'Unknown time')}")
 
-def render_sources(sources: List[Dict]):
-    """Hiển thị sources của câu trả lời"""
+def render_sources(sources: List[Dict], msg_idx: int):
+    """Hiển thị sources của câu trả lời với unique keys"""
     
+    # ✅ FIX: Remove key parameter completely from expander
     with st.expander(f"📚 Sources ({len(sources)} found)"):
         for i, source in enumerate(sources):
             st.write(f"**Source {i+1}:**")
@@ -115,20 +116,29 @@ def render_sources(sources: List[Dict]):
             chunk_text = source.get('chunk_text', '')
             if len(chunk_text) > 200:
                 chunk_text = chunk_text[:200] + "..."
-            st.text_area(f"Content preview {i+1}:", chunk_text, height=100, key=f"source_{i}")
+            
+            # ✅ Keep unique key for text_area only
+            st.text_area(
+                f"Content preview {i+1}:", 
+                chunk_text, 
+                height=100, 
+                key=f"source_{msg_idx}_{i}"
+            )
             st.divider()
 
-def render_feedback_buttons(message_id: int):
-    """Render nút feedback"""
+def render_feedback_buttons(message_id: int, msg_idx: int):
+    """Render nút feedback với unique keys"""
     
     col1, col2, col3 = st.columns([1, 1, 4])
     
     with col1:
-        if st.button("👍", key=f"helpful_{message_id}", help="This answer was helpful"):
+        # ✅ FIX: Add message index to make key unique
+        if st.button("👍", key=f"helpful_{message_id}_{msg_idx}", help="This answer was helpful"):
             submit_feedback(message_id, True)
     
     with col2:
-        if st.button("👎", key=f"not_helpful_{message_id}", help="This answer was not helpful"):
+        # ✅ FIX: Add message index to make key unique
+        if st.button("👎", key=f"not_helpful_{message_id}_{msg_idx}", help="This answer was not helpful"):
             submit_feedback(message_id, False)
 
 def submit_feedback(message_id: int, is_helpful: bool):

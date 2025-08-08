@@ -41,9 +41,13 @@ class PDFProcessingService:
             
             # 4. Detect PDF type and extract text
             pdf_type = self.pdf_utils.detect_pdf_type(document.file_path)
-            
+
             if pdf_type == "text-based":
                 extraction_result = self.pdf_utils.extract_text_fast(document.file_path)
+                # Fallback sang OCR nếu text layer quá ít (PDF scan bị nhận nhầm)
+                if extraction_result.get("success") and sum(len(p) for p in extraction_result.get("text_pages", [])) < 1000:
+                    self.logger.info("Text layer too short, falling back to OCR")
+                    extraction_result = await self.ocr_service.extract_text_from_pdf(document.file_path)
             else:
                 extraction_result = await self.ocr_service.extract_text_from_pdf(document.file_path)
             

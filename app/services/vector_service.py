@@ -10,6 +10,15 @@ from app.core.vector_store import FAISSVectorStore
 from app.services.embedding_service import EmbeddingService
 from app.models.document import Document, DocumentChunk
 
+# ✅ SỬA: Move function outside class và add missing import
+import re
+
+def _keyword_overlap_score(query: str, text: str) -> float:
+    """Helper function for keyword overlap calculation"""
+    q = set(re.findall(r'\w+', query.lower()))
+    t = set(re.findall(r'\w+', text.lower()))
+    return (len(q & t) / len(q)) if q else 0.0
+
 class VectorService:
     """
     High-level vector service for document indexing and search
@@ -120,59 +129,53 @@ class VectorService:
         self,
         query: str,
         k: int = 5,
-        document_ids: Optional[List[int]] = None,
-        similarity_threshold: float = None
-    ) -> List[Dict[str, Any]]:
-        """
-        Search for similar chunks based on query
-        """
+        document_ids=None,
+        similarity_threshold: float | None = None
+    ):
+        if not self.vector_store or not self.vector_store.index:
+            self.logger.warning("No vector index available for search")
+            return []
+
         try:
-            if not self.vector_store or not self.vector_store.index:
-                self.logger.warning("No vector index available for search")
-                return []
-            
-            if self.vector_store.index.ntotal == 0:
-                self.logger.warning("Vector index is empty")
-                return []
-            
-            # Generate embedding for query
-            query_embedding = await self.embedding_service.text_to_embedding(query)
-            query_vector = np.array(query_embedding, dtype=np.float32)
-            
-            # Search in vector store
-            raw_results = self.vector_store.search(
-                query_vector=query_vector,
-                k=k * 2,  # Get more results to filter
+            emb = await self.embedding_service.text_to_embedding(query)
+            # lấy nhiều ứng viên hơn để re-rank
+            candidates = self.vector_store.search(
+                np.array(emb, dtype=np.float32), 
+                k=max(k * 10, 30),
                 document_ids=document_ids
             )
             
-            # Apply similarity threshold if specified
-            threshold = similarity_threshold or getattr(settings, 'SIMILARITY_THRESHOLD', 0.7)
-            filtered_results = [
-                result for result in raw_results 
-                if result['similarity'] >= threshold
-            ]
-            
-            # Limit to requested number
-            final_results = filtered_results[:k]
-            
-            # Enhance results with additional info
-            enhanced_results = []
-            for result in final_results:
-                enhanced = {
-                    'chunk_id': result['metadata']['chunk_id'],
-                    'document_id': result['metadata']['document_id'],
-                    'chunk_index': result['metadata']['chunk_index'],
-                    'page_number': result['metadata']['page_number'],
-                    'similarity_score': result['similarity'],
-                    'distance': result['distance'],
-                    'chunk_text': result['metadata']['chunk_text'],
-                    'text_length': result['metadata']['text_length']
-                }
-                enhanced_results.append(enhanced)
-            
-            self.logger.info(f"🔍 Search query: '{query[:50]}...' returned {len(enhanced_results)} results")
-            return enhanced_results
+            if not candidates:
+                self.logger.info("🔍 Raw search returned 0 results")
+                return []
+
+            top = candidates[0]['similarity']
+            base_thr = settings.SIMILARITY_THRESHOLD if similarity_threshold is None else similarity_threshold
+            dyn_thr = max(base_thr, top - 0.15)
+
+            filtered = [r for r in candidates if r['similarity'] >= dyn_thr]
+
+            # ✅ SỬA: Use correct function name
+            for r in filtered:
+                txt = r['metadata'].get('chunk_text', '')
+                r['rerank'] = r['similarity'] + 0.2 * _keyword_overlap_score(query, txt)
+
+            filtered.sort(key=lambda x: x['rerank'], reverse=True)
+
+            results = []
+            for r in filtered[:k]:
+                m = r['metadata']
+                results.append({
+                    "chunk_id": m.get("chunk_id"),
+                    "document_id": r.get("document_id") or m.get("document_id"),
+                    "chunk_index": m.get("chunk_index"),
+                    "page_number": m.get("page_number"),
+                    "similarity_score": r["similarity"],
+                    "chunk_text": m.get("chunk_text", "")
+                })
+
+            self.logger.info(f"🔍 Search query: '{query[:50]}...' returned {len(results)} results")
+            return results
             
         except Exception as e:
             self.logger.error(f"❌ Search failed: {e}")

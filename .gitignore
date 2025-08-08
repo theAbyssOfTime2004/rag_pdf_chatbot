@@ -55,7 +55,15 @@ htmlcov/
 .docker/
 
 # Alembic
-alembic/versions/__pycache__/# Test files
-test_task5_prototype.py
+alembic/versions/__pycache__/
+
+# Test files
 test_files/
+tests/
+
+
+#vector indexes
 vector_indexes/
+# Embedding cache files
+embeddings_cache/
+embeddings_cache/*.pkl

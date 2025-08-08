@@ -41,9 +41,9 @@ class Settings(BaseSettings):
     
     # Vector Store Settings
     VECTOR_DIMENSION: int = 768  # Nomic model dimension
-    FAISS_INDEX_TYPE: str = "Flat"
+    FAISS_INDEX_TYPE: str = "FlatIP"
     MAX_SEARCH_RESULTS: int = 20
-    SIMILARITY_THRESHOLD: float = 0.7
+    SIMILARITY_THRESHOLD: float = 0.3
     
     # Embedding Cache
     ENABLE_EMBEDDING_CACHE: bool = True

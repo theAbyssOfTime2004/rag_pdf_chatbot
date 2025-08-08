@@ -22,34 +22,30 @@ class FAISSVectorStore:
         
         self.logger = logging.getLogger(__name__)
     
-    def create_index(self, index_type: str = "Flat") -> None:
+    def create_index(self, index_type: str = "FlatIP") -> None:
         """Create FAISS index"""
-        if index_type == "Flat":
-            # Exact search (good for small datasets)
+        if index_type in ("FlatIP", "IP"):
+            self.index = faiss.IndexFlatIP(self.dimension)
+        elif index_type == "Flat":
             self.index = faiss.IndexFlatL2(self.dimension)
         elif index_type == "IVF":
-            # Approximate search (good for large datasets)
-            quantizer = faiss.IndexFlatL2(self.dimension)
-            self.index = faiss.IndexIVFFlat(quantizer, self.dimension, 100)  # 100 clusters
-        
+            quantizer = faiss.IndexFlatIP(self.dimension)
+            self.index = faiss.IndexIVFFlat(quantizer, self.dimension, 100, faiss.METRIC_INNER_PRODUCT)
         self.logger.info(f"Created FAISS index: {index_type}, dimension: {self.dimension}")
     
     def add_vectors(
-        self, 
-        vectors: np.ndarray, 
+        self,
+        vectors: np.ndarray,
         metadata: List[Dict],
         document_id: int
     ) -> List[int]:
-        """Add vectors to index"""
+        # normalize to unit length for cosine/IP
+        vectors = vectors.astype(np.float32)
+        faiss.normalize_L2(vectors)
         if self.index is None:
-            self.create_index()
-        
-        # Normalize vectors (for cosine similarity)
-        vectors_normalized = vectors / np.linalg.norm(vectors, axis=1, keepdims=True)
-        
-        # Add to FAISS index
+            self.create_index("FlatIP")
         start_id = self.index.ntotal
-        self.index.add(vectors_normalized.astype('float32'))
+        self.index.add(vectors)
         
         # Store metadata
         vector_ids = list(range(start_id, self.index.ntotal))
@@ -60,41 +56,25 @@ class FAISSVectorStore:
         self.logger.info(f"Added {len(vectors)} vectors for document {document_id}")
         return vector_ids
     
-    def search(
-        self, 
-        query_vector: np.ndarray, 
-        k: int = 5,
-        document_ids: Optional[List[int]] = None
-    ) -> List[Dict]:
-        """Search for similar vectors"""
+    def search(self, query_vector: np.ndarray, k: int = 5, document_ids: Optional[List[int]] = None) -> List[Dict]:
         if self.index is None or self.index.ntotal == 0:
             return []
-        
-        # Normalize query vector
-        query_normalized = query_vector / np.linalg.norm(query_vector)
-        query_normalized = query_normalized.reshape(1, -1).astype('float32')
-        
-        # Search
-        distances, indices = self.index.search(query_normalized, k)
-        
+        q = query_vector.astype(np.float32).reshape(1, -1)
+        faiss.normalize_L2(q)  # normalize query 
+        distances, indices = self.index.search(q, k)
         results = []
-        for i, (distance, idx) in enumerate(zip(distances[0], indices[0])):
-            if idx == -1:  # No more results
-                break
-            
-            # Filter by document_ids if specified
+        for distance, idx in zip(distances[0], indices[0]):
+            if idx < 0:
+                continue
             if document_ids and self.document_mapping.get(idx) not in document_ids:
                 continue
-            
-            result = {
+            results.append({
                 'vector_id': int(idx),
-                'distance': float(distance),
-                'similarity': 1 / (1 + distance),  # Convert distance to similarity
+                'distance': float(distance),         # for IP, this is similarity in [-1,1]
+                'similarity': float(distance),
                 'metadata': self.metadata[idx],
                 'document_id': self.document_mapping.get(idx)
-            }
-            results.append(result)
-        
+            })
         return results
     
     def save_index(self, filename: str = "faiss_index") -> bool:
