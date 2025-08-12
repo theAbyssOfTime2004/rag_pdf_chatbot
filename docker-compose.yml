@@ -1,0 +1,53 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    volumes:
+      - postgres_data:/var/lib/postgresql/data/
+    env_file:
+      - ./.env.docker
+    ports:
+      - "5433:5432" # <-- Đổi cổng host từ 5432 thành 5433
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d rag_db"] # <-- Hardcode giá trị
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./app:/app/app
+      - ./alembic:/app/alembic
+      - ./uploads:/app/uploads
+      - ./vector_indexes:/app/vector_indexes
+      - ./embeddings_cache:/app/embeddings_cache
+    env_file:
+      - ./.env.docker
+    depends_on:
+      db:
+        condition: service_healthy
+    # For Ollama on host machine
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./frontend:/app
+    depends_on:
+      - backend
+    environment:
+      - FASTAPI_BACKEND_URL=http://backend:8000
+
+volumes:
+  postgres_data:

@@ -1,0 +1,9 @@
+streamlit==1.47.1
+requests==2.32.4
+python-dotenv==1.1.1
+aiofiles==24.1.0
+httpx==0.28.1
+pandas==2.3.1
+pillow==11.3.0
+
+#toàn bộ project này có thể được viết lại dưới framework llamaindex không, việc đó có recommended không, có khó khăn gì không, và có hiệu quả gì sau khi làm vậy không, nếu bắt đầu làm thì sẽ làm theo các bước như thế nào
