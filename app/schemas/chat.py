@@ -1,64 +1,57 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict, Any
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 
 class ChatRequest(BaseModel):
-    question: str = Field(..., min_length=1, description="Câu hỏi của người dùng")
-    session_id: Optional[str] = Field(None, description="ID của phiên trò chuyện để duy trì ngữ cảnh")
-    document_id: Optional[int] = Field(None, description="ID của tài liệu cụ thể để giới hạn tìm kiếm")
+    query: str = Field(..., min_length=1, max_length=5000, description="User's question")
+    session_id: Optional[int] = Field(None, description="Chat session ID")
+    max_tokens: Optional[int] = Field(512, ge=50, le=2048, description="Maximum tokens in response")
+    include_sources: bool = Field(True, description="Include source documents in response")
 
-class Source(BaseModel):
-    chunk_id: int
-    document_id: int
-    page_number: int
-    similarity_score: float
-    chunk_text: str
+class SourceInfo(BaseModel):
+    content: str
+    score: float
+    chunk_id: Optional[int] = None
+    document_id: Optional[int] = None
+    page_number: Optional[int] = None
+    chunk_index: Optional[int] = None
+    file_name: str = "Unknown"
+    document_filename: Optional[str] = None
 
 class ChatResponse(BaseModel):
+    query: str
     answer: str
-    model_used: str
-    sources: List[Source]  
+    sources: List[SourceInfo] = []
+    total_sources: int
+    session_id: Optional[int] = None
+    message_id: Optional[int] = None
+    model_used: str = "unknown"
+    processing_info: Dict[str, Any] = {}
 
-class ChatHistory(BaseModel):
-    question: str
-    answer: str
-    timestamp: datetime
-    model_config = {
-        "from_attributes": True
-    }
-
-class FeedbackRequest(BaseModel):
-    message_id: int
-    is_helpful: bool
-    comment: Optional[str] = None
+    class Config:
+        from_attributes = True
 
 class ChatSessionCreate(BaseModel):
-    title: Optional[str] = None
+    title: Optional[str] = Field(None, max_length=200, description="Session title")
 
 class ChatSessionResponse(BaseModel):
     id: int
-    session_id: str
-    title: Optional[str]
+    title: str
     created_at: datetime
     updated_at: datetime
-    
+    message_count: int
+
     class Config:
         from_attributes = True
-
-class ChatMessageCreate(BaseModel):
-    message_type: str  # 'user' or 'assistant'
-    content: str
-    message_metadata: Optional[Dict[str, Any]] = None
 
 class ChatMessageResponse(BaseModel):
     id: int
-    session_id: str
-    message_type: str
+    session_id: int
+    role: str
     content: str
-    message_metadata: Optional[Dict[str, Any]]
-    feedback_score: Optional[int]
     created_at: datetime
-    updated_at: datetime
-    
+    metadata: Optional[Dict[str, Any]] = Field(None, alias="metadata_")
+
     class Config:
         from_attributes = True
+        populate_by_name = True
