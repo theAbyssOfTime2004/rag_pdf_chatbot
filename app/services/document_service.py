@@ -1,195 +1,250 @@
+import logging
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_
 from typing import List, Optional, Dict, Any
 from fastapi import HTTPException, UploadFile
+from pathlib import Path
+
 from app.models.document import Document, DocumentChunk
-from app.schemas.document import DocumentCreate, DocumentUpdate
-from app.utils.file_handler import FileHandler
+from app.schemas.document import DocumentResponse, DocumentCreateRequest
+from app.services.vector_service import VectorService
+from app.services.llamaindex_service import LlamaIndexService  # THÊM
+from app.utils.file_handler import save_upload_file, get_file_path, validate_file_type
 from app.core.config import settings
-import logging
-import os
-from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 class DocumentService:
+    """
+    Service quản lý tài liệu - được refactor để sử dụng LlamaIndexService
+    """
+    
     def __init__(self, db: Session):
         self.db = db
-        self.file_handler = FileHandler()
-    
-    async def upload_document(
-        self, 
-        file: UploadFile, 
-        user_id: Optional[str] = None
-    ) -> Document:
+        self.vector_service = VectorService(db=db)
+        self.llama_index_service = LlamaIndexService()  # THÊM
+        logger.info("DocumentService initialized with LlamaIndexService")
+
+    async def process_and_store_document(self, file: UploadFile) -> Document:
         """
-        Upload và lưu document với validation
+        Xử lý và lưu trữ tài liệu hoàn chỉnh - refactored với LlamaIndexService
         """
         try:
-            # 1. Validate file
-            await self.file_handler.validate_file(file)
-            
-            # 2. Save file to disk
-            file_info = await self.file_handler.save_file(file)
-            
-            # 3. Create document record
-            document = Document(
-                filename=file_info["filename"],
-                original_filename=file.filename,
-                file_size=file_info["file_size"],
-                file_path=file_info["file_path"],
-                content_type=file.content_type,
-                processing_status="pending",
-                processed=False
-            )
-            
-            self.db.add(document)
-            self.db.commit()
-            self.db.refresh(document)
-            
-            logging.info(f"Document uploaded successfully: {document.id}")
-            return document
-            
-        except Exception as e:
-            self.db.rollback()
-            # Cleanup file if database fails
-            if 'file_info' in locals():
-                self.file_handler.delete_file(file_info["file_path"])
-            raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
-    
-    def get_documents(
-        self, 
-        skip: int = 0, 
-        limit: int = 100,
-        status: Optional[str] = None,
-        search: Optional[str] = None
-    ) -> List[Document]:
-        """
-        Lấy danh sách documents với filtering
-        """
-        query = self.db.query(Document)
-        
-        # Filter by status
-        if status:
-            query = query.filter(Document.processing_status == status)
-        
-        # Search by filename
-        if search:
-            query = query.filter(
-                or_(
-                    Document.filename.contains(search),
-                    Document.original_filename.contains(search)
+            # Validate file type
+            if not self.llama_index_service.is_allowed_file(file.filename):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"File type not supported: {file.filename}"
                 )
-            )
-        
-        return query.offset(skip).limit(limit).all()
-    
-    def get_document_by_id(self, document_id: int) -> Optional[Document]:
-        """
-        Lấy document theo ID
-        """
-        document = self.db.query(Document).filter(Document.id == document_id).first()
-        if not document:
-            raise HTTPException(status_code=404, detail="Document not found")
-        return document
-    
-    def update_document(
-        self, 
-        document_id: int, 
-        document_update: DocumentUpdate
-    ) -> Document:
-        """
-        Cập nhật thông tin document
-        """
-        document = self.get_document_by_id(document_id)
-        
-        update_data = document_update.model_dump(exclude_unset=True)
-        for field, value in update_data.items():
-            setattr(document, field, value)
-        
-        self.db.commit()
-        self.db.refresh(document)
-        
-        logging.info(f"Document updated: {document_id}")
-        return document
-    
-    def delete_document(self, document_id: int) -> bool:
-        """
-        Xóa document và file liên quan
-        """
-        document = self.get_document_by_id(document_id)
-        
-        try:
-            # 1. Delete file from disk
-            if os.path.exists(document.file_path):
-                os.remove(document.file_path)
-                logging.info(f"File deleted: {document.file_path}")
+
+            # Read file content
+            file_content = await file.read()
             
-            # 2. Delete from database (cascade will handle chunks)
+            # Validate file size
+            if len(file_content) > settings.MAX_FILE_SIZE:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"File too large. Maximum size: {settings.MAX_FILE_SIZE} bytes"
+                )
+
+            # Save file to disk
+            file_path = await save_upload_file(file, file_content)
+            logger.info(f"File saved to: {file_path}")
+
+            # Create document record in database
+            db_document = Document(
+                filename=file.filename,
+                original_filename=file.filename,
+                file_path=str(file_path),
+                file_size=len(file_content),
+                content_type=file.content_type or "application/octet-stream",
+                processing_status="processing"
+            )
+            
+            self.db.add(db_document)
+            self.db.commit()
+            self.db.refresh(db_document)
+            logger.info(f"Created document record with ID: {db_document.id}")
+
+            # === REFACTOR START: Sử dụng LlamaIndexService ===
+            logger.info(f"Starting LlamaIndex processing for: {file.filename}")
+
+            # Process file using LlamaIndexService
+            processing_result = await self.llama_index_service.process_uploaded_file_complete(
+                file_content=file_content,
+                filename=file.filename,
+                generate_embeddings=True
+            )
+
+            if processing_result["status"] != "success":
+                db_document.processing_status = "failed"
+                db_document.error_message = processing_result.get("error", "Unknown processing error")
+                self.db.commit()
+                raise HTTPException(status_code=500, detail=db_document.error_message)
+
+            nodes = processing_result["nodes"]
+            embeddings = processing_result["embeddings"]
+
+            if not nodes:
+                db_document.processing_status = "failed"
+                db_document.error_message = "No content extracted from the document."
+                self.db.commit()
+                raise HTTPException(status_code=400, detail="No content could be extracted from the document")
+
+            # Create DocumentChunk records
+            chunks_to_add = []
+            chunk_texts = []
+            
+            for i, node in enumerate(nodes):
+                chunk_content = node.get_content()
+                chunk_texts.append(chunk_content)
+                
+                chunk = DocumentChunk(
+                    document_id=db_document.id,
+                    content=chunk_content,
+                    chunk_index=i,
+                    page_number=node.metadata.get("page_label"),
+                    metadata_=node.metadata  # Store full node metadata
+                )
+                chunks_to_add.append(chunk)
+
+            # Add chunks to database
+            self.db.add_all(chunks_to_add)
+            self.db.flush()  # flush để chunks có ID
+
+            # Get chunk IDs
+            chunk_ids = [chunk.id for chunk in chunks_to_add]
+
+            # Add embeddings to vector store
+            await self.vector_service.add_chunks_to_index(
+                document_id=db_document.id,
+                chunk_ids=chunk_ids,
+                chunk_texts=chunk_texts,
+                embeddings=embeddings
+            )
+            # === REFACTOR END ===
+
+            # Update document status
+            db_document.processing_status = "completed"
+            db_document.total_chunks = len(chunks_to_add)
+            self.db.commit()
+            self.db.refresh(db_document)
+            
+            logger.info(f"Successfully processed document ID: {db_document.id} with {len(chunks_to_add)} chunks")
+            return db_document
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error processing document {file.filename}: {e}", exc_info=True)
+            
+            # Update document status to failed
+            if 'db_document' in locals():
+                db_document.processing_status = "failed"
+                db_document.error_message = str(e)
+                self.db.commit()
+            
+            raise HTTPException(
+                status_code=500,
+                detail=f"Document processing failed: {str(e)}"
+            )
+
+    def get_document_by_id(self, document_id: int) -> Optional[Document]:
+        """Lấy tài liệu theo ID"""
+        return self.db.query(Document).filter(Document.id == document_id).first()
+
+    def get_documents(self, skip: int = 0, limit: int = 100) -> List[Document]:
+        """Lấy danh sách tài liệu"""
+        return (
+            self.db.query(Document)
+            .offset(skip)
+            .limit(limit)
+            .all()
+        )
+
+    def get_document_chunks(self, document_id: int) -> List[DocumentChunk]:
+        """Lấy các chunks của tài liệu"""
+        return (
+            self.db.query(DocumentChunk)
+            .filter(DocumentChunk.document_id == document_id)
+            .order_by(DocumentChunk.chunk_index)
+            .all()
+        )
+
+    async def delete_document(self, document_id: int) -> bool:
+        """Xóa tài liệu và các chunks liên quan"""
+        try:
+            document = self.get_document_by_id(document_id)
+            if not document:
+                return False
+
+            # Delete from vector store
+            await self.vector_service.remove_document_from_index(document_id)
+
+            # Delete chunks from database
+            self.db.query(DocumentChunk).filter(
+                DocumentChunk.document_id == document_id
+            ).delete()
+
+            # Delete document from database
             self.db.delete(document)
             self.db.commit()
-            
-            logging.info(f"Document deleted successfully: {document_id}")
+
+            # Delete physical file
+            try:
+                file_path = Path(document.file_path)
+                if file_path.exists():
+                    file_path.unlink()
+                    logger.info(f"Deleted file: {file_path}")
+            except Exception as e:
+                logger.warning(f"Could not delete file {document.file_path}: {e}")
+
+            logger.info(f"Successfully deleted document ID: {document_id}")
             return True
-            
+
         except Exception as e:
+            logger.error(f"Error deleting document {document_id}: {e}")
             self.db.rollback()
             raise HTTPException(
-                status_code=500, 
+                status_code=500,
                 detail=f"Failed to delete document: {str(e)}"
             )
-    
-    def get_document_statistics(self) -> Dict[str, Any]:
-        """
-        Thống kê documents
-        """
-        total_docs = self.db.query(Document).count()
-        processed_docs = self.db.query(Document).filter(Document.processed == True).count()
-        pending_docs = self.db.query(Document).filter(
-            Document.processing_status == "pending"
-        ).count()
+
+    def search_documents(self, query: str, limit: int = 10) -> List[Document]:
+        """Tìm kiếm tài liệu theo tên"""
+        return (
+            self.db.query(Document)
+            .filter(
+                or_(
+                    Document.filename.ilike(f"%{query}%"),
+                    Document.original_filename.ilike(f"%{query}%")
+                )
+            )
+            .limit(limit)
+            .all()
+        )
+
+    def get_processing_stats(self) -> Dict[str, Any]:
+        """Lấy thống kê xử lý tài liệu"""
+        from sqlalchemy import func
         
-        total_size = self.db.query(Document).with_entities(
-            self.db.func.sum(Document.file_size)
-        ).scalar() or 0
+        stats = (
+            self.db.query(
+                func.count(Document.id).label('total_documents'),
+                func.count(Document.id).filter(Document.processing_status == 'completed').label('completed'),
+                func.count(Document.id).filter(Document.processing_status == 'processing').label('processing'),
+                func.count(Document.id).filter(Document.processing_status == 'failed').label('failed'),
+                func.sum(Document.file_size).label('total_size'),
+                func.sum(Document.total_chunks).label('total_chunks')
+            )
+            .first()
+        )
         
         return {
-            "total_documents": total_docs,
-            "processed_documents": processed_docs,
-            "pending_documents": pending_docs,
-            "failed_documents": total_docs - processed_docs - pending_docs,
-            "total_size_bytes": total_size,
-            "total_size_mb": round(total_size / (1024 * 1024), 2)
+            "total_documents": stats.total_documents or 0,
+            "completed": stats.completed or 0,
+            "processing": stats.processing or 0,
+            "failed": stats.failed or 0,
+            "total_size_bytes": stats.total_size or 0,
+            "total_chunks": stats.total_chunks or 0
         }
-    
-    async def trigger_manual_processing(self, document_id: int) -> Dict[str, Any]:
-        """Manually trigger processing for a pending document"""
-        
-        document = self.db.query(Document).filter(Document.id == document_id).first()
-        if not document:
-            raise HTTPException(status_code=404, detail="Document not found")
-        
-        if document.processing_status == 'completed':
-            return {"message": "Document already processed", "status": "completed"}
-        
-        # Reset status và trigger processing
-        document.processing_status = 'processing'
-        self.db.commit()
-        
-        try:
-            from app.services.pdf_processing_service import PDFProcessingService
-            
-            pdf_processor = PDFProcessingService()
-            result = await pdf_processor.process_document(document_id, self.db)
-            
-            if result.get("status") == "success":
-                return {"message": "Processing completed successfully", "status": "completed"}
-            else:
-                return {"message": f"Processing failed: {result.get('error')}", "status": "failed"}
-                
-        except Exception as e:
-            # Update document status to failed
-            document.processing_status = 'failed'
-            document.processing_error = str(e)
-            self.db.commit()
-            
-            logging.error(f"Document processing failed for ID {document_id}: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Processing failed: {e}")

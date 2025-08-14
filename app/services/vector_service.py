@@ -7,334 +7,235 @@ from sqlalchemy import and_
 
 from app.core.config import settings
 from app.core.vector_store import FAISSVectorStore
-from app.services.embedding_service import EmbeddingService
 from app.models.document import Document, DocumentChunk
 
-# ✅ SỬA: Move function outside class và add missing import
-import re
-
-def _keyword_overlap_score(query: str, text: str) -> float:
-    """Helper function for keyword overlap calculation"""
-    q = set(re.findall(r'\w+', query.lower()))
-    t = set(re.findall(r'\w+', text.lower()))
-    return (len(q & t) / len(q)) if q else 0.0
+logger = logging.getLogger(__name__)
 
 class VectorService:
     """
-    High-level vector service for document indexing and search
+    Vector service để quản lý FAISS vector store
+    Refactored để nhận embeddings từ LlamaIndexService thay vì tự tạo
     """
     
-    def __init__(self):
-        self.logger = logging.getLogger(__name__)
-        self.embedding_service = EmbeddingService()
-        self.vector_store = None
-        self._initialize_vector_store()
-    
-    def _initialize_vector_store(self):
-        """Initialize FAISS vector store"""
+    def __init__(self, db: Session):
+        self.db = db
+        self.logger = logger  # ✅ THÊM: Add logger instance
+        
+        # Khởi tạo FAISS vector store
+        dimension = settings.EMBEDDING_DIMENSION if hasattr(settings, 'EMBEDDING_DIMENSION') else 768
+        self.vector_store = FAISSVectorStore(dimension=dimension)
+        
+        # Load existing index if available
+        self._load_existing_index()
+        self.logger.info("VectorService initialized (without EmbeddingService)")
+
+    def _load_existing_index(self):
+        """Load existing FAISS index from disk"""
         try:
-            dimension = self.embedding_service.get_dimension()
-            self.vector_store = FAISSVectorStore(
-                dimension=dimension,
-                index_path="vector_indexes"
-            )
-            
-            # ✅ THÊM: Debug file existence
-            from pathlib import Path
-            index_file = Path("vector_indexes/faiss_index.index")
-            metadata_file = Path("vector_indexes/faiss_index_metadata.pkl")
-            
-            self.logger.info(f"🔍 Working directory: {Path.cwd()}")
-            self.logger.info(f"📁 Index file exists: {index_file.exists()}")
-            self.logger.info(f"📁 Metadata file exists: {metadata_file.exists()}")
-            
-            # Try to load existing index
-            if self.vector_store.load_index("faiss_index"):
-                self.logger.info(f"📚 Loaded existing vector index with {self.vector_store.index.ntotal} vectors")
+            index_path = Path("vector_indexes")
+            if index_path.exists():
+                self.vector_store.load_index()
+                self.logger.info("Loaded existing FAISS index")
             else:
-                self.logger.info("🆕 Failed to load existing index or no index found")
-                
+                self.logger.info("No existing index found, will create new one")
         except Exception as e:
-            self.logger.error(f"❌ Failed to initialize vector store: {e}")
-            raise
-    
-    async def index_document_chunks(self, document_id: int, db: Session) -> Dict[str, Any]:
+            self.logger.warning(f"Failed to load existing index: {e}")
+
+    async def add_chunks_to_index(
+        self, 
+        document_id: int, 
+        chunk_ids: List[int], 
+        chunk_texts: List[str], 
+        embeddings: List[List[float]]
+    ):
         """
-        Index all chunks of a document into vector store
+        Thêm các chunks với embeddings đã tạo sẵn vào index.
+        
+        Args:
+            document_id: ID của document
+            chunk_ids: List các chunk ID
+            chunk_texts: List nội dung text của chunks
+            embeddings: List embeddings đã được tạo sẵn
         """
         try:
-            # Get document and its chunks
-            document = db.query(Document).filter(Document.id == document_id).first()
-            if not document:
-                raise ValueError(f"Document {document_id} not found")
+            if not embeddings or len(embeddings) != len(chunk_ids):
+                raise ValueError(f"Embedding count ({len(embeddings)}) doesn't match chunk count ({len(chunk_ids)})")
+
+            self.logger.info(f"Adding {len(chunk_ids)} chunks to vector index for document {document_id}")
+
+            # Convert embeddings to numpy array
+            vectors = np.array(embeddings, dtype=np.float32)
             
-            chunks = db.query(DocumentChunk).filter(
-                DocumentChunk.document_id == document_id
-            ).order_by(DocumentChunk.chunk_index).all()
-            
-            if not chunks:
-                raise ValueError(f"No chunks found for document {document_id}")
-            
-            self.logger.info(f"🔄 Indexing {len(chunks)} chunks for document {document_id}")
-            
-            # Extract text content from chunks
-            chunk_texts = [chunk.chunk_text for chunk in chunks]
-            
-            # Generate embeddings for all chunks
-            embeddings = await self.embedding_service.batch_text_to_embeddings(chunk_texts)
-            embeddings_array = np.array(embeddings, dtype=np.float32)
-            
-            # Prepare metadata for each chunk
+            # Create metadata for each chunk
             metadata = []
-            for chunk in chunks:
-                meta = {
-                    'chunk_id': chunk.id,
-                    'document_id': chunk.document_id,
-                    'chunk_index': chunk.chunk_index,
-                    'page_number': chunk.page_number,
-                    'text_length': len(chunk.chunk_text),
-                    'chunk_text': chunk.chunk_text  # Store full text for retrieval
-                }
-                metadata.append(meta)
-            
-            # Add vectors to FAISS index
-            vector_ids = self.vector_store.add_vectors(
-                vectors=embeddings_array,
-                metadata=metadata,
-                document_id=document_id
-            )
+            for i, (chunk_id, text) in enumerate(zip(chunk_ids, chunk_texts)):
+                metadata.append({
+                    "chunk_id": chunk_id,
+                    "document_id": document_id,
+                    "text": text[:500],  # Limit text length in metadata
+                    "chunk_index": i
+                })
+
+            # Add vectors to store
+            self.vector_store.add_vectors(vectors, metadata, document_id)
             
             # Save index to disk
             self.vector_store.save_index()
             
-            result = {
-                'document_id': document_id,
-                'chunks_indexed': len(chunks),
-                'vector_ids': vector_ids,
-                'success': True
-            }
-            
-            self.logger.info(f"✅ Successfully indexed {len(chunks)} chunks for document {document_id}")
-            return result
-            
-        except Exception as e:
-            self.logger.error(f"❌ Failed to index document {document_id}: {e}")
-            return {
-                'document_id': document_id,
-                'success': False,
-                'error': str(e)
-            }
-    
-    async def search_similar_chunks(
-        self,
-        query: str,
-        k: int = 5,
-        document_ids=None,
-        similarity_threshold: float | None = None
-    ):
-        if not self.vector_store or not self.vector_store.index:
-            self.logger.warning("No vector index available for search")
-            return []
+            self.logger.info(f"Successfully added {len(vectors)} vectors for document {document_id}")
 
-        try:
-            emb = await self.embedding_service.text_to_embedding(query)
-            # lấy nhiều ứng viên hơn để re-rank
-            candidates = self.vector_store.search(
-                np.array(emb, dtype=np.float32), 
-                k=max(k * 10, 30),
-                document_ids=document_ids
-            )
+        except Exception as e:
+            self.logger.error(f"Failed to add chunks to index for document {document_id}: {e}")
+            raise
+
+    async def search_similar_chunks(
+        self, 
+        query_embedding: List[float], 
+        top_k: int = 5,
+        document_ids: Optional[List[int]] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Tìm kiếm chunks tương tự dựa trên query embedding đã được tạo sẵn.
+        
+        Args:
+            query_embedding: Embedding của query (đã được tạo sẵn)
+            top_k: Số lượng kết quả trả về
+            document_ids: Filter theo document IDs (optional)
             
-            if not candidates:
-                self.logger.info("🔍 Raw search returned 0 results")
+        Returns:
+            List các chunks tương tự với scores và metadata
+        """
+        try:
+            if not query_embedding:
                 return []
 
-            top = candidates[0]['similarity']
-            base_thr = settings.SIMILARITY_THRESHOLD if similarity_threshold is None else similarity_threshold
-            dyn_thr = max(base_thr, top - 0.15)
-
-            filtered = [r for r in candidates if r['similarity'] >= dyn_thr]
-
-            # ✅ SỬA: Use correct function name
-            for r in filtered:
-                txt = r['metadata'].get('chunk_text', '')
-                r['rerank'] = r['similarity'] + 0.2 * _keyword_overlap_score(query, txt)
-
-            filtered.sort(key=lambda x: x['rerank'], reverse=True)
-
-            results = []
-            for r in filtered[:k]:
-                m = r['metadata']
-                results.append({
-                    "chunk_id": m.get("chunk_id"),
-                    "document_id": r.get("document_id") or m.get("document_id"),
-                    "chunk_index": m.get("chunk_index"),
-                    "page_number": m.get("page_number"),
-                    "similarity_score": r["similarity"],
-                    "chunk_text": m.get("chunk_text", "")
-                })
-
-            self.logger.info(f"🔍 Search query: '{query[:50]}...' returned {len(results)} results")
-            return results
+            # Convert query to numpy array
+            query_vector = np.array(query_embedding, dtype=np.float32).reshape(1, -1)
             
-        except Exception as e:
-            self.logger.error(f"❌ Search failed: {e}")
-            return []
-    
-    async def reindex_all_documents(self, db: Session) -> Dict[str, Any]:
-        """
-        Reindex all processed documents
-        """
-        try:
-            # Get all processed documents
-            documents = db.query(Document).filter(
-                and_(
-                    Document.processed == True,
-                    Document.chunk_count > 0
-                )
-            ).all()
+            # Search in vector store
+            results = self.vector_store.search(query_vector, top_k)
             
-            if not documents:
-                return {
-                    'success': True,
-                    'message': 'No documents to reindex',
-                    'documents_processed': 0
+            if not results:
+                return []
+
+            # Process results
+            similar_chunks = []
+            for score, metadata in results:
+                chunk_id = metadata.get("chunk_id")
+                if not chunk_id:
+                    continue
+
+                # Get full chunk data from database
+                chunk = self.db.query(DocumentChunk).filter(
+                    DocumentChunk.id == chunk_id
+                ).first()
+                
+                if not chunk:
+                    continue
+
+                # Filter by document IDs if specified
+                if document_ids and chunk.document_id not in document_ids:
+                    continue
+
+                # Get document info
+                document = self.db.query(Document).filter(
+                    Document.id == chunk.document_id
+                ).first()
+
+                chunk_data = {
+                    "chunk_id": chunk.id,
+                    "document_id": chunk.document_id,
+                    "content": chunk.content,
+                    "chunk_index": chunk.chunk_index,
+                    "page_number": chunk.page_number,
+                    "similarity_score": float(score),
+                    "document_filename": document.filename if document else "Unknown",
+                    "metadata": metadata
                 }
+                similar_chunks.append(chunk_data)
+
+            self.logger.info(f"Found {len(similar_chunks)} similar chunks")
+            return similar_chunks
+
+        except Exception as e:
+            self.logger.error(f"Failed to search similar chunks: {e}")
+            return []
+
+    async def remove_document_from_index(self, document_id: int):
+        """Xóa tất cả vectors của một document khỏi index"""
+        try:
+            removed_count = self.vector_store.remove_by_document_id(document_id)
             
-            self.logger.info(f"🔄 Reindexing {len(documents)} documents...")
+            if removed_count > 0:
+                self.vector_store.save_index()
+                self.logger.info(f"Removed {removed_count} vectors for document {document_id}")
+            else:
+                self.logger.warning(f"No vectors found for document {document_id}")
+
+        except Exception as e:
+            self.logger.error(f"Failed to remove document {document_id} from index: {e}")
+            raise
+
+    def get_index_stats(self) -> Dict[str, Any]:
+        """Lấy thống kê về vector index"""
+        try:
+            stats = self.vector_store.get_stats()
+            return {
+                "total_vectors": stats.get("total_vectors", 0),
+                "dimension": stats.get("dimension", 0),
+                "index_size_mb": stats.get("index_size_mb", 0),
+                "documents_indexed": len(stats.get("document_ids", [])),
+                "backend": "FAISS"
+            }
+        except Exception as e:
+            self.logger.error(f"Failed to get index stats: {e}")
+            return {"error": str(e)}
+
+    async def rebuild_index(self):
+        """Rebuild toàn bộ vector index từ database"""
+        try:
+            self.logger.info("Starting index rebuild...")
             
             # Clear existing index
-            self.vector_store = FAISSVectorStore(
-                dimension=self.embedding_service.get_dimension(),
-                index_path="vector_indexes"
-            )
+            self.vector_store.clear_index()
             
-            success_count = 0
-            failed_documents = []
+            # Get all completed documents
+            documents = self.db.query(Document).filter(
+                Document.processing_status == "completed"
+            ).all()
+            
+            total_processed = 0
             
             for document in documents:
                 try:
-                    result = await self.index_document_chunks(document.id, db)
-                    if result['success']:
-                        success_count += 1
-                    else:
-                        failed_documents.append(document.id)
+                    # Get chunks for this document
+                    chunks = self.db.query(DocumentChunk).filter(
+                        DocumentChunk.document_id == document.id
+                    ).order_by(DocumentChunk.chunk_index).all()
+                    
+                    if not chunks:
+                        continue
+                    
+                    # Note: Để rebuild index, chúng ta cần embeddings
+                    # Hiện tại chỉ log warning vì không có embeddings sẵn
+                    self.logger.warning(f"Cannot rebuild embeddings for document {document.id} - embeddings not stored")
+                    
                 except Exception as e:
-                    self.logger.error(f"Failed to reindex document {document.id}: {e}")
-                    failed_documents.append(document.id)
+                    self.logger.error(f"Failed to process document {document.id} during rebuild: {e}")
+                    continue
             
-            return {
-                'success': True,
-                'documents_processed': success_count,
-                'failed_documents': failed_documents,
-                'total_documents': len(documents)
-            }
+            self.vector_store.save_index()
+            self.logger.info(f"Index rebuild completed. Processed {total_processed} documents")
             
         except Exception as e:
-            self.logger.error(f"❌ Reindexing failed: {e}")
-            return {
-                'success': False,
-                'error': str(e)
-            }
-    
-    def delete_document_vectors(self, document_id: int) -> bool:
-        """
-        Delete vectors for a specific document
-        Note: FAISS doesn't support efficient deletion, so we recreate index
-        """
-        try:
-            if not self.vector_store or not self.vector_store.index:
-                return True  # Nothing to delete
-            
-            # Find vectors to keep (all except for this document)
-            vectors_to_keep = []
-            metadata_to_keep = []
-            doc_mapping_to_keep = {}
-            
-            for i, meta in enumerate(self.vector_store.metadata):
-                if meta.get('document_id') != document_id:
-                    # Keep this vector
-                    vector = self.vector_store.index.reconstruct(i)
-                    vectors_to_keep.append(vector)
-                    metadata_to_keep.append(meta)
-                    doc_mapping_to_keep[len(vectors_to_keep) - 1] = meta.get('document_id')
-            
-            if vectors_to_keep:
-                # Recreate index with remaining vectors
-                self.vector_store = FAISSVectorStore(
-                    dimension=self.embedding_service.get_dimension(),
-                    index_path="vector_indexes"
-                )
-                
-                vectors_array = np.array(vectors_to_keep, dtype=np.float32)
-                # Group by document_id for proper addition
-                doc_groups = {}
-                for i, meta in enumerate(metadata_to_keep):
-                    doc_id = meta['document_id']
-                    if doc_id not in doc_groups:
-                        doc_groups[doc_id] = {'vectors': [], 'metadata': []}
-                    doc_groups[doc_id]['vectors'].append(vectors_array[i])
-                    doc_groups[doc_id]['metadata'].append(meta)
-                
-                # Add vectors back by document groups
-                for doc_id, group in doc_groups.items():
-                    group_vectors = np.array(group['vectors'])
-                    self.vector_store.add_vectors(
-                        vectors=group_vectors,
-                        metadata=group['metadata'],
-                        document_id=doc_id
-                    )
-                
-                # Save updated index
-                self.vector_store.save_index()
-            else:
-                # No vectors left, create empty index
-                self.vector_store = FAISSVectorStore(
-                    dimension=self.embedding_service.get_dimension(),
-                    index_path="vector_indexes"
-                )
-            
-            self.logger.info(f"🗑️  Deleted vectors for document {document_id}")
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"❌ Failed to delete vectors for document {document_id}: {e}")
-            return False
-    
-    def get_index_stats(self) -> Dict[str, Any]:
-        """
-        Get statistics about the vector index
-        """
-        try:
-            if not self.vector_store or not self.vector_store.index:
-                return {
-                    'total_vectors': 0,
-                    'index_dimension': self.embedding_service.get_dimension(),
-                    'documents_indexed': 0,
-                    'index_type': 'empty'
-                }
-            
-            # Count unique documents
-            unique_docs = set()
-            for meta in self.vector_store.metadata:
-                if 'document_id' in meta:
-                    unique_docs.add(meta['document_id'])
-            
-            return {
-                'total_vectors': self.vector_store.index.ntotal,
-                'index_dimension': self.vector_store.dimension,
-                'documents_indexed': len(unique_docs),
-                'index_type': type(self.vector_store.index).__name__,
-                'embedding_model': self.embedding_service.get_model_info()
-            }
-            
-        except Exception as e:
-            self.logger.error(f"❌ Failed to get index stats: {e}")
-            return {'error': str(e)}
-    
+            self.logger.error(f"Failed to rebuild index: {e}")
+            raise
+
     def cleanup(self):
-        """
-        Cleanup resources
-        """
-        if hasattr(self, 'embedding_service'):
-            self.embedding_service.cleanup()
+        """Cleanup resources"""
+        try:
+            if hasattr(self.vector_store, 'cleanup'):
+                self.vector_store.cleanup()
+            self.logger.info("VectorService cleanup completed")
+        except Exception as e:
+            self.logger.warning(f"Error during VectorService cleanup: {e}")

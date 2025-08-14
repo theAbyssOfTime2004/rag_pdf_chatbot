@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     
     # Vector Store Settings
     VECTOR_DIMENSION: int = 768  # Nomic model dimension
+    EMBEDDING_DIMENSION: int = 768  # Add this for backward compatibility
     FAISS_INDEX_TYPE: str = "FlatIP"
     MAX_SEARCH_RESULTS: int = 20
     SIMILARITY_THRESHOLD: float = 0.3
